@@ -1,0 +1,11 @@
+{
+  "app": "npx ts-node --prefer-ts-exts src/index.ts",
+  "watch": {
+    "include": ["src/**"]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws"]
+  }
+}

@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+!vitest.config.ts
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# CDK output
+cdk.out/
+
+# Secrets
+.env.deploy
+.env.local
+.env*.local

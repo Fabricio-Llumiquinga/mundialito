@@ -40,6 +40,8 @@ interface WorldCupGame {
   away_team_name_en?: string;
   home_team_label?: string;
   away_team_label?: string;
+  home_penalty_score?: string;
+  away_penalty_score?: string;
 }
 
 function mapPhase(type: string): TournamentPhase {
@@ -61,11 +63,102 @@ function mapStatus(game: WorldCupGame): 'upcoming' | 'in_progress' | 'completed'
   return 'in_progress';
 }
 
-function mapGame(game: WorldCupGame, stadiums?: Record<string, StadiumInfo>): MatchView {
+/**
+ * Resolve a "Winner Match X" or "Loser Match X" label into the actual team name
+ * by looking up the referenced match result in the games array.
+ *
+ * - If the API already provides home_team_name_en, that takes priority (handled in mapGame).
+ * - This function is only called when home_team_name_en is missing but a label exists.
+ * - Returns the resolved team name, or the original label if not resolvable yet.
+ */
+function resolveTeamLabel(label: string, gamesById: Record<string, WorldCupGame>): { name: string; teamId: string } | null {
+  // Match patterns: "Winner Match 101", "Loser Match 102"
+  const winnerMatch = label.match(/^Winner Match (\d+)$/i);
+  const loserMatch = label.match(/^Loser Match (\d+)$/i);
+
+  if (winnerMatch) {
+    const refId = winnerMatch[1];
+    const refGame = gamesById[refId];
+    if (refGame && (refGame.finished === 'TRUE' || refGame.time_elapsed === 'finished')) {
+      const homeScore = parseInt(refGame.home_score, 10) || 0;
+      const awayScore = parseInt(refGame.away_score, 10) || 0;
+
+      if (homeScore > awayScore) {
+        return { name: refGame.home_team_name_en ?? refGame.home_team_label ?? `Equipo ${refGame.home_team_id}`, teamId: refGame.home_team_id };
+      } else if (awayScore > homeScore) {
+        return { name: refGame.away_team_name_en ?? refGame.away_team_label ?? `Equipo ${refGame.away_team_id}`, teamId: refGame.away_team_id };
+      } else {
+        // Draw in knockout → check penalty scores
+        const homePen = parseInt(refGame.home_penalty_score ?? '', 10);
+        const awayPen = parseInt(refGame.away_penalty_score ?? '', 10);
+        if (!isNaN(homePen) && !isNaN(awayPen)) {
+          if (homePen > awayPen) {
+            return { name: refGame.home_team_name_en ?? refGame.home_team_label ?? `Equipo ${refGame.home_team_id}`, teamId: refGame.home_team_id };
+          } else {
+            return { name: refGame.away_team_name_en ?? refGame.away_team_label ?? `Equipo ${refGame.away_team_id}`, teamId: refGame.away_team_id };
+          }
+        }
+      }
+    }
+    return null; // Not resolvable yet
+  }
+
+  if (loserMatch) {
+    const refId = loserMatch[1];
+    const refGame = gamesById[refId];
+    if (refGame && (refGame.finished === 'TRUE' || refGame.time_elapsed === 'finished')) {
+      const homeScore = parseInt(refGame.home_score, 10) || 0;
+      const awayScore = parseInt(refGame.away_score, 10) || 0;
+
+      if (homeScore > awayScore) {
+        return { name: refGame.away_team_name_en ?? refGame.away_team_label ?? `Equipo ${refGame.away_team_id}`, teamId: refGame.away_team_id };
+      } else if (awayScore > homeScore) {
+        return { name: refGame.home_team_name_en ?? refGame.home_team_label ?? `Equipo ${refGame.home_team_id}`, teamId: refGame.home_team_id };
+      } else {
+        // Draw in knockout → loser is the one who lost on penalties
+        const homePen = parseInt(refGame.home_penalty_score ?? '', 10);
+        const awayPen = parseInt(refGame.away_penalty_score ?? '', 10);
+        if (!isNaN(homePen) && !isNaN(awayPen)) {
+          if (homePen > awayPen) {
+            return { name: refGame.away_team_name_en ?? refGame.away_team_label ?? `Equipo ${refGame.away_team_id}`, teamId: refGame.away_team_id };
+          } else {
+            return { name: refGame.home_team_name_en ?? refGame.home_team_label ?? `Equipo ${refGame.home_team_id}`, teamId: refGame.home_team_id };
+          }
+        }
+      }
+    }
+    return null; // Not resolvable yet
+  }
+
+  return null; // Not a resolvable pattern
+}
+
+function mapGame(game: WorldCupGame, stadiums?: Record<string, StadiumInfo>, gamesById?: Record<string, WorldCupGame>): MatchView {
   const status = mapStatus(game);
   const phase = mapPhase(game.type);
-  const homeTeam = game.home_team_name_en ?? game.home_team_label ?? `Equipo ${game.home_team_id}`;
-  const awayTeam = game.away_team_name_en ?? game.away_team_label ?? `Equipo ${game.away_team_id}`;
+
+  // Resolve team names: API name takes priority, then try resolving labels, then fallback to raw label
+  let homeTeam = game.home_team_name_en;
+  let homeTeamId = game.home_team_id;
+  if (!homeTeam && game.home_team_label && gamesById) {
+    const resolved = resolveTeamLabel(game.home_team_label, gamesById);
+    if (resolved) {
+      homeTeam = resolved.name;
+      homeTeamId = resolved.teamId;
+    }
+  }
+  homeTeam = homeTeam ?? game.home_team_label ?? `Equipo ${game.home_team_id}`;
+
+  let awayTeam = game.away_team_name_en;
+  let awayTeamId = game.away_team_id;
+  if (!awayTeam && game.away_team_label && gamesById) {
+    const resolved = resolveTeamLabel(game.away_team_label, gamesById);
+    if (resolved) {
+      awayTeam = resolved.name;
+      awayTeamId = resolved.teamId;
+    }
+  }
+  awayTeam = awayTeam ?? game.away_team_label ?? `Equipo ${game.away_team_id}`;
 
   // Parse date: "06/11/2026 13:00" → venue local time (displayed as-is)
   const [datePart, timePart] = (game.local_date ?? '').split(' ');
@@ -79,8 +172,8 @@ function mapGame(game: WorldCupGame, stadiums?: Record<string, StadiumInfo>): Ma
 
   const matchView: MatchView = {
     matchId: `wc-${game.id}`,
-    team1: { teamId: game.home_team_id, teamName: homeTeam },
-    team2: { teamId: game.away_team_id, teamName: awayTeam },
+    team1: { teamId: homeTeamId, teamName: homeTeam },
+    team2: { teamId: awayTeamId, teamName: awayTeam },
     date: isoDate,
     time: venueTime, // venue local time as HH:MM
     venue: venueName,
@@ -148,7 +241,15 @@ export async function fetchMatches(phase?: string, group?: string): Promise<Matc
   }
 
   const data = await response.json();
-  let matches: MatchView[] = (data.games ?? []).map((g: WorldCupGame) => mapGame(g, stadiums));
+  const games: WorldCupGame[] = data.games ?? [];
+
+  // Build lookup by game ID so knockout matches can resolve "Winner/Loser Match X" labels
+  const gamesById: Record<string, WorldCupGame> = {};
+  for (const g of games) {
+    gamesById[g.id] = g;
+  }
+
+  let matches: MatchView[] = games.map((g: WorldCupGame) => mapGame(g, stadiums, gamesById));
 
   // Sort by UTC time stored in time field
   matches.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));

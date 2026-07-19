@@ -38,6 +38,10 @@ interface GameData {
   finished: string;
   time_elapsed: string;
   type: string;
+  home_team_name_en?: string;
+  away_team_name_en?: string;
+  home_penalty_score?: string;
+  away_penalty_score?: string;
 }
 
 interface SyncResult {
@@ -141,18 +145,58 @@ export async function handler(): Promise<SyncResult> {
   // 6. Calculate scores per user
   const userScores: Record<string, { totalScore: number; exactScoreCount: number; email: string }> = {};
 
+  // Determine tournament winner from the final match (type === 'final')
+  const finalGame = games.find(g => g.type === 'final' && (g.time_elapsed === 'finished' || g.finished === 'TRUE'));
+  let tournamentWinnerTeamId: string | null = null;
+  if (finalGame) {
+    const homeScore = parseInt(finalGame.home_score, 10) || 0;
+    const awayScore = parseInt(finalGame.away_score, 10) || 0;
+    if (homeScore > awayScore) {
+      tournamentWinnerTeamId = finalGame.home_team_name_en?.toLowerCase() ?? null;
+    } else if (awayScore > homeScore) {
+      tournamentWinnerTeamId = finalGame.away_team_name_en?.toLowerCase() ?? null;
+    } else {
+      // Penalties in the final
+      const homePen = parseInt(finalGame.home_penalty_score ?? '', 10);
+      const awayPen = parseInt(finalGame.away_penalty_score ?? '', 10);
+      if (!isNaN(homePen) && !isNaN(awayPen)) {
+        tournamentWinnerTeamId = homePen > awayPen
+          ? finalGame.home_team_name_en?.toLowerCase() ?? null
+          : finalGame.away_team_name_en?.toLowerCase() ?? null;
+      }
+    }
+  }
+
+  console.log(`[sync-games] Tournament winner: ${tournamentWinnerTeamId ?? 'not determined yet'}`);
+
+  const POINTS_TOURNAMENT_WINNER = 10;
+
   for (const pred of allPredictions) {
     const userId = pred.userId as string;
     const email = pred.userEmail as string;
     const matchId = pred.matchId as string;
     const predType = pred.predictionType as string;
 
-    if (!userId || !matchId) continue;
+    if (!userId) continue;
 
     // Initialize user
     if (!userScores[userId]) {
       userScores[userId] = { totalScore: 0, exactScoreCount: 0, email };
     }
+
+    // Score tournament winner predictions
+    if (predType === 'tournament_winner') {
+      if (tournamentWinnerTeamId) {
+        const userTeamId = (pred.teamId as string ?? '').toLowerCase();
+        if (userTeamId === tournamentWinnerTeamId) {
+          userScores[userId].totalScore += POINTS_TOURNAMENT_WINNER;
+          console.log(`[sync-games] User ${email} predicted tournament winner correctly (+${POINTS_TOURNAMENT_WINNER})`);
+        }
+      }
+      continue;
+    }
+
+    if (!matchId) continue;
 
     const result = resultsMap[matchId];
     if (!result) continue; // Match not finished yet
@@ -170,7 +214,6 @@ export async function handler(): Promise<SyncResult> {
         userScores[userId].exactScoreCount += 1;
       }
     }
-    // tournament_winner scored only at end of tournament
   }
 
   // 7. Write leaderboard entries to DynamoDB (GSI1PK = LEADERBOARD)
